@@ -2,10 +2,12 @@ node_modules/
 dist/
 coverage/
 
-# Bí mật: hash mật khẩu và JWT_SECRET. Dùng .env.example làm mẫu.
+# Bí mật: hash mật khẩu và JWT_SECRET.
+# Mẫu: .env.example (chạy bằng npm) và api.env.example (chạy bằng Docker).
 .env
 .env.*
 !.env.example
+api.env
 
 # Dữ liệu tài chính thật — không bao giờ đưa lên remote.
 *.db

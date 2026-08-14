@@ -1,0 +1,51 @@
+# Chạy: docker compose up -d --build
+#
+# Máy này đã có GitLab giữ cổng 80/443/5050/2222, nên app nghe cổng khác.
+# Đổi cổng bằng biến WEB_PORT, vd: WEB_PORT=9000 docker compose up -d
+#
+# Cần clone cả hai repo cạnh nhau:
+#   money/
+#     Be-money/   <- chạy compose ở đây
+#     Fe-money/
+
+name: money
+
+services:
+  api:
+    build: .
+    # api.env chứa mật khẩu và JWT_SECRET. Dùng env_file thay vì environment
+    # để Compose không diễn giải ký tự $ trong chuỗi hash bcrypt.
+    env_file:
+      - api.env
+    environment:
+      DATABASE_URL: file:/data/money.db
+      PORT: '3000'
+    volumes:
+      # Toàn bộ dữ liệu nằm ở đây. Xoá volume là mất sạch sổ sách.
+      - money-data:/data
+    # Không mở cổng ra host: chỉ nginx trong mạng nội bộ gọi tới.
+    expose:
+      - '3000'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../Fe-money
+      args:
+        # Gọi API cùng origin, nginx proxy sang service api.
+        VITE_API_URL: /api
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  money-data:

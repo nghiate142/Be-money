@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
+import { HealthController } from './health.controller';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
@@ -26,6 +27,7 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
     PersonModule,
     ExchangeRateModule,
   ],
+  controllers: [HealthController],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },

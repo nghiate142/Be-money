@@ -11,7 +11,7 @@ Nghiệp vụ chi tiết: [docs/nghiep-vu.md](docs/nghiep-vu.md)
 
 ---
 
-## Chạy lần đầu
+## Chạy local
 
 ```bash
 npm install
@@ -30,19 +30,117 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
 npm run set-password -- "mật khẩu của bạn"
 ```
 
-Tạo database và dữ liệu khởi tạo:
+Tạo database rồi chạy:
 
 ```bash
-npx prisma migrate deploy && npx prisma generate && npm run seed
+npx prisma migrate deploy && npx prisma generate && npm run dev
+```
+
+Không cần seed thủ công: loại tiền và danh mục hệ thống được tạo tự động mỗi lần khởi
+động ([bootstrap.service.ts](src/prisma/bootstrap.service.ts)), idempotent. Danh mục gợi
+ý chỉ tạo ở lần chạy đầu, xoá rồi thì không mọc lại.
+
+---
+
+## Deploy bằng Docker Compose v2
+
+Clone **cả hai repo cạnh nhau**, compose ở repo này sẽ build frontend từ `../Fe-money`:
+
+```bash
+mkdir money && cd money
+git clone https://github.com/nghiate142/Be-money.git
+git clone https://github.com/nghiate142/Fe-money.git
+cd Be-money
+```
+
+Tạo cấu hình:
+
+```bash
+cp api.env.example api.env
+```
+
+Sinh `JWT_SECRET`:
+
+```bash
+openssl rand -base64 48
+```
+
+Sinh hash mật khẩu (dán cả hai vào `api.env`):
+
+```bash
+docker run --rm node:24-alpine sh -c "npm i -s bcryptjs >/dev/null 2>&1 && node -e \"console.log(require('bcryptjs').hashSync(process.argv[1],10))\" 'mật khẩu của bạn'"
 ```
 
 Chạy:
 
 ```bash
-npm run dev
+docker compose up -d --build
 ```
 
-## Chạy trên server
+Mở `http://<ip-server>:8080`.
+
+### Chung máy với GitLab
+
+GitLab đang giữ `80`, `443`, `5050`, `2222`, nên compose này mặc định dùng **8080** và
+không đụng gì tới GitLab — hai project Compose tách biệt, mạng riêng, volume riêng.
+
+Đổi cổng khi cần:
+
+```bash
+WEB_PORT=9000 docker compose up -d
+```
+
+Muốn dùng domain + HTTPS thì GitLab đang chiếm 443, có hai hướng:
+
+- **Nhanh nhất:** trỏ subdomain về `ip:8080` qua Cloudflare, hoặc mở thêm cổng và dùng
+  Caddy/nginx riêng ở cổng khác.
+- **Gọn hơn:** cấu hình nginx của GitLab Omnibus proxy thêm một `server_name` sang
+  `127.0.0.1:8080` (`nginx['custom_nginx_config']` trong `gitlab.rb`). Cách này dùng
+  chung chứng chỉ nhưng mỗi lần nâng cấp GitLab phải kiểm tra lại.
+
+### Kiến trúc container
+
+```
+web  (nginx :80 -> host ${WEB_PORT})   phục vụ file tĩnh + proxy /api/ -> api:3000
+api  (node :3000, không mở ra host)    NestJS + SQLite trên volume money-data
+```
+
+Frontend gọi API bằng đường dẫn tương đối `/api`, cùng origin với trang web:
+
+- Không cần biết domain/cổng lúc build, đổi cổng không phải build lại.
+- Không dính CORS, nên `WEB_ORIGIN` để trống.
+
+`docker compose up` tự chạy `prisma migrate deploy` trước khi khởi động app, nên thêm
+cột mới chỉ cần deploy lại là xong.
+
+### Cập nhật
+
+```bash
+cd ../Fe-money && git pull && cd ../Be-money && git pull
+docker compose up -d --build
+```
+
+### Dữ liệu và sao lưu
+
+Toàn bộ sổ sách nằm trong volume `money_money-data`. **Xoá volume là mất sạch.**
+
+```bash
+docker compose exec api sh -c "cat /data/money.db" > backup-$(date +%F).db
+```
+
+Khôi phục:
+
+```bash
+docker compose cp backup-2026-08-14.db api:/data/money.db && docker compose restart api
+```
+
+Mang dữ liệu từ máy local lên: copy `dev.db` rồi
+
+```bash
+docker compose cp dev.db api:/data/money.db && docker compose restart api
+```
+
+## Deploy không dùng Docker
 
 ```bash
 npm ci
@@ -52,19 +150,19 @@ npm run build
 npm run start:prod
 ```
 
-Bắt buộc trong `.env` trên server:
+Bắt buộc trong `.env`:
 
 | Biến | Ghi chú |
 |---|---|
 | `JWT_SECRET` | Chuỗi ngẫu nhiên dài, **không** dùng lại giá trị mẫu |
 | `APP_PASSWORD_HASH` | Sinh bằng `npm run set-password` |
-| `WEB_ORIGIN` | Đúng origin của frontend, vd `https://money.example.com`. Bỏ trống chỉ dùng khi chạy local |
+| `WEB_ORIGIN` | Origin của frontend nếu khác origin backend. Cùng origin (có proxy) thì để trống |
 
 `src/generated/` không nằm trong repo — luôn chạy `npx prisma generate` trước khi build.
 
-Nên chạy sau reverse proxy có HTTPS (nginx/Caddy). App không tự phục vụ TLS.
+Nên chạy sau reverse proxy có HTTPS. App không tự phục vụ TLS.
 
-## Sao lưu
+## Sao lưu (chạy local)
 
 Toàn bộ dữ liệu nằm trong `dev.db`. Copy file đó là xong:
 
@@ -117,6 +215,7 @@ Lịch trả **chỉ để đối chiếu** — app không tự tạo giao dịc
 ## API
 
 ```
+GET    /health                           không cần token, dùng cho healthcheck
 POST   /auth/login                       GET /auth/me
 
 GET/POST       /categories               PATCH/DELETE /categories/:id
@@ -135,7 +234,7 @@ GET/POST       /exchange-rates
 GET /reports/overview | by-category | by-project | by-person | loans | monthly | export.csv
 ```
 
-Mọi route trừ `/auth/login` đều cần header `Authorization: Bearer <token>`.
+Mọi route trừ `/auth/login` và `/health` đều cần header `Authorization: Bearer <token>`.
 
 ### Bộ lọc
 
