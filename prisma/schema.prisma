@@ -1,0 +1,206 @@
+// Money tracker — SQLite. Tiền lưu bằng Int (VND), không dùng float.
+// SQLite không hỗ trợ enum của Prisma nên kind/direction/nature là String,
+// ràng buộc bằng class-validator ở tầng DTO.
+//
+// Nguyên tắc nghiệp vụ (xem docs/nghiep-vu.md):
+//  - Mọi chuyển động tiền đều là 1 Transaction, kể cả vay/trả nợ.
+//  - `nature` quyết định giao dịch có vào lãi/lỗ hay không.
+//  - Trạng thái khoản nợ KHÔNG lưu cột, luôn tính lại từ số đã trả + hạn trả.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Category {
+  id   Int    @id @default(autoincrement())
+  name String
+  kind String // income | expense
+
+  /// Danh mục hệ thống (Vay nợ, Trả nợ gốc, Lãi vay…) — không cho sửa/xoá.
+  /// `code` để code tra cứu khi tự sinh giao dịch từ khoản nợ.
+  code String? @unique
+
+  createdAt    DateTime      @default(now())
+  transactions Transaction[]
+
+  @@unique([name, kind])
+}
+
+model Project {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique
+  startedAt    DateTime      @default(now())
+  closedAt     DateTime?
+  note         String?
+  createdAt    DateTime      @default(now())
+  transactions Transaction[]
+  debts        Debt[]
+}
+
+/// Người liên quan tới các khoản nợ. Thay cho text tự do, để gom được
+/// "tổng đang nợ anh Nam" qua nhiều khoản vay.
+model Person {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  phone     String?
+  note      String?
+  createdAt DateTime @default(now())
+  debts     Debt[]
+}
+
+/// Tiền tệ được phép ghi. `decimals` = số chữ số thập phân (VND 0, USD 2).
+model Currency {
+  code      String         @id // VND, USD…
+  name      String
+  decimals  Int            @default(0)
+  rates     ExchangeRate[]
+  createdAt DateTime       @default(now())
+}
+
+/// Tỷ giá 1 đơn vị ngoại tệ = bao nhiêu VND, theo ngày.
+/// Lấy tự động từ API rồi cache lại, nên ghi lại giao dịch cũ không cần mạng.
+model ExchangeRate {
+  id           Int      @id @default(autoincrement())
+  currencyCode String
+  currency     Currency @relation(fields: [currencyCode], references: [code])
+  date         DateTime
+  rate         Float
+  source       String   @default("api") // api | manual
+  createdAt    DateTime @default(now())
+
+  @@unique([currencyCode, date])
+}
+
+model Transaction {
+  id   Int      @id @default(autoincrement())
+  date DateTime
+
+  /// Luôn là VND — mọi báo cáo tính trên trường này.
+  amount Int
+
+  /// Tiền gốc như đã thanh toán. `originalAmount` tính bằng đơn vị nhỏ nhất
+  /// của loại tiền đó (USD lưu theo cent), `rate` là tỷ giá lúc ghi.
+  /// Giao dịch VND thì currency = VND, rate = 1, originalAmount = amount.
+  currency       String @default("VND")
+  originalAmount Int    @default(0)
+  rate           Float  @default(1)
+
+  kind String // income | expense
+
+  /// operating = kinh doanh/tiêu dùng (vào lãi lỗ)
+  /// financing = vay, trả gốc, cho vay, thu hồi gốc (KHÔNG vào lãi lỗ)
+  /// interest  = lãi vay (vào lãi lỗ)
+  nature String @default("operating")
+
+  note       String?
+  categoryId Int
+  category   Category @relation(fields: [categoryId], references: [id])
+  projectId  Int?
+  project    Project? @relation(fields: [projectId], references: [id])
+
+  /// Giao dịch nhận/đưa tiền gốc khi lập khoản nợ. Mỗi khoản nợ đúng 1 giao dịch.
+  debtId Int?  @unique
+  debt   Debt? @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  /// Giao dịch sinh từ một lần trả nợ. Một lần trả có thể sinh 2 giao dịch
+  /// (gốc: financing, lãi: interest) nên KHÔNG unique.
+  debtPaymentId Int?
+  debtPayment   DebtPayment? @relation(fields: [debtPaymentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([date])
+  @@index([categoryId])
+  @@index([projectId])
+  @@index([nature])
+  @@index([debtPaymentId])
+}
+
+model Debt {
+  id        Int    @id @default(autoincrement())
+  personId  Int
+  person    Person @relation(fields: [personId], references: [id])
+  direction String // i_owe = tôi nợ họ | owes_me = họ nợ tôi
+
+  principal Int
+  date      DateTime // ngày chuyển tiền
+  dueDate   DateTime?
+
+  /// Có sinh giao dịch tiền cho khoản gốc hay không.
+  /// Bật (mặc định): vừa vay xong, tiền vào túi -> số dư tăng.
+  /// Tắt: khoản vay cũ, tiền đã tiêu hết trước khi dùng app -> chỉ theo dõi dư nợ,
+  /// không đụng số dư. Các lần TRẢ vẫn luôn ghi vào sổ vì đó là tiền ra thật.
+  affectsBalance Boolean @default(true)
+
+  /// personal = vay mượn cá nhân | unsecured = tín chấp | secured = thế chấp
+  /// | overdraft = thấu chi
+  loanType String @default("personal")
+
+  /// none = không tính lãi theo công thức (chỉ ghi tay khi trả)
+  /// flat      = lãi phẳng trên gốc ban đầu (công ty tài chính, trả góp)
+  /// declining = lãi trên dư nợ giảm dần, gốc chia đều (ngân hàng VN)
+  /// annuity   = trả góp đều EMI, lãi trên dư nợ giảm dần
+  /// fixed     = số tiền lãi cố định mỗi tháng (thấu chi, thoả thuận riêng)
+  interestMethod String @default("none")
+
+  /// %/tháng, dùng cho flat | declining | annuity.
+  interestRate Float?
+
+  /// VND/tháng, dùng cho method = fixed.
+  fixedInterestAmount Int?
+
+  /// Dùng cho method = contract: số tiền phải trả mỗi kỳ ghi trong hợp đồng.
+  /// Mỗi bên cho vay làm tròn một kiểu, nên chép thẳng số của họ là khớp tuyệt đối.
+  contractPayment Int?
+
+  /// Kỳ cuối thường lệch so với các kỳ trước. Bỏ trống = bằng contractPayment.
+  contractLastPayment Int?
+
+  /// Số kỳ trả. Null với thấu chi (trả gốc lúc nào tuỳ).
+  termMonths Int?
+
+  /// Ngày trả hàng tháng (1–31). Bỏ trống thì lấy theo ngày của `date`.
+  paymentDay Int?
+
+  /// Ghi chú lãi suất dạng tự do, vd "2%/tháng đầu rồi thả nổi".
+  interestNote String?
+
+  note      String?
+  projectId Int?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  payments     DebtPayment[]
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+
+  @@index([personId])
+  @@index([direction])
+  @@index([dueDate])
+  @@index([projectId])
+}
+
+model DebtPayment {
+  id     Int  @id @default(autoincrement())
+  debtId Int
+  debt   Debt @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  date DateTime
+
+  /// Tách rõ gốc và lãi trong cùng một lần trả.
+  /// Chỉ `principalAmount` làm giảm số nợ còn lại.
+  principalAmount Int
+  interestAmount  Int @default(0)
+
+  note         String?
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+
+  @@index([debtId])
+}
