@@ -55,6 +55,11 @@ export class CreateTransactionDto {
   @IsInt()
   projectId?: number | null;
 
+  /** Trả cho ai / nhận từ ai. Không dính dáng tới dư nợ. */
+  @IsOptional()
+  @IsInt()
+  personId?: number | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(1000)

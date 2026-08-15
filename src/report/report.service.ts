@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { and, dateRange } from '../common/query.util';
+import { QueryReportDto } from './dto/query-report.dto';
 import { PNL_NATURES, withRemaining } from '../common/money.util';
 import { buildSchedule, reconcile } from '../common/loan-schedule';
 import type { InterestMethod } from '../common/loan-schedule';
@@ -12,9 +13,18 @@ const PNL_ONLY = { nature: { in: PNL_NATURES } };
 export class ReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private range(from?: string, to?: string) {
-    const r = dateRange(from, to);
-    return r ? { date: r } : undefined;
+  /**
+   * Bộ lọc chung cho mọi báo cáo tính trên giao dịch: khoảng ngày cộng với
+   * thu hẹp theo công việc / danh mục / người.
+   */
+  private scope(q: QueryReportDto = {}) {
+    const r = dateRange(q.from, q.to);
+    return and(
+      r ? { date: r } : undefined,
+      q.projectId !== undefined ? { projectId: q.projectId } : undefined,
+      q.categoryId !== undefined ? { categoryId: q.categoryId } : undefined,
+      q.personId !== undefined ? { personId: q.personId } : undefined,
+    );
   }
 
   /**
@@ -23,8 +33,8 @@ export class ReportService {
    *  - business: lãi/lỗ của các công việc
    *  - personal: chi tiêu hằng ngày, không thuộc công việc nào
    */
-  async overview(from?: string, to?: string) {
-    const period = this.range(from, to);
+  async overview(q: QueryReportDto = {}) {
+    const period = this.scope(q);
 
     const [cashPeriod, cashAll, pnl, debts] = await Promise.all([
       this.prisma.transaction.groupBy({
@@ -32,7 +42,13 @@ export class ReportService {
         where: and(period),
         _sum: { amount: true },
       }),
-      this.prisma.transaction.groupBy({ by: ['kind'], _sum: { amount: true } }),
+      // Số dư luôn tính từ đầu tới nay (không cắt theo ngày), nhưng vẫn
+      // tôn trọng lọc công việc/danh mục/người để biết "việc này còn bao nhiêu".
+      this.prisma.transaction.groupBy({
+        by: ['kind'],
+        where: this.scope({ ...q, from: undefined, to: undefined }),
+        _sum: { amount: true },
+      }),
       this.prisma.transaction.groupBy({
         by: ['kind'],
         where: and(period, PNL_ONLY),
@@ -94,10 +110,10 @@ export class ReportService {
     };
   }
 
-  async byCategory(from?: string, to?: string) {
+  async byCategory(q: QueryReportDto = {}) {
     const rows = await this.prisma.transaction.groupBy({
       by: ['categoryId', 'kind'],
-      where: and(this.range(from, to), PNL_ONLY),
+      where: and(this.scope(q), PNL_ONLY),
       _sum: { amount: true },
     });
     const categories = await this.prisma.category.findMany();
@@ -110,10 +126,10 @@ export class ReportService {
   }
 
   /** Lãi/lỗ theo công việc — không tính tiền vay và trả gốc. */
-  async byProject(from?: string, to?: string) {
+  async byProject(q: QueryReportDto = {}) {
     const rows = await this.prisma.transaction.groupBy({
       by: ['projectId', 'kind'],
-      where: and(this.range(from, to), PNL_ONLY),
+      where: and(this.scope(q), PNL_ONLY),
       _sum: { amount: true },
     });
     const projects = await this.prisma.project.findMany();
@@ -191,8 +207,19 @@ export class ReportService {
     };
   }
 
-  /** Dư nợ gom theo người, hai chiều. */
-  async byPerson() {
+  /**
+   * Gom theo người: dư nợ hai chiều (không phụ thuộc kỳ lọc) và tiền
+   * thu/chi đã gắn người trong kỳ. Người nào không có gì cả thì bỏ.
+   */
+  async byPerson(q: QueryReportDto = {}) {
+    const flows = await this.prisma.transaction.groupBy({
+      by: ['personId', 'kind'],
+      where: and(this.scope(q), PNL_ONLY, { NOT: { personId: null } }),
+      _sum: { amount: true },
+    });
+    const flowOf = (personId: number, kind: string) =>
+      flows.find((f) => f.personId === personId && f.kind === kind)?._sum.amount ?? 0;
+
     const people = await this.prisma.person.findMany({
       include: {
         debts: {
@@ -215,16 +242,27 @@ export class ReportService {
           },
           { iOwe: 0, owesMe: 0 },
         );
-        return { personId: p.id, name: p.name, ...totals, debtCount: p.debts.length };
+        return {
+          personId: p.id,
+          name: p.name,
+          ...totals,
+          income: flowOf(p.id, 'income'),
+          expense: flowOf(p.id, 'expense'),
+          debtCount: p.debts.length,
+        };
       })
-      .filter((p) => p.iOwe > 0 || p.owesMe > 0)
-      .sort((a, b) => b.iOwe + b.owesMe - (a.iOwe + a.owesMe));
+      .filter((p) => p.iOwe > 0 || p.owesMe > 0 || p.income > 0 || p.expense > 0)
+      .sort(
+        (a, b) =>
+          b.iOwe + b.owesMe + b.expense + b.income -
+          (a.iOwe + a.owesMe + a.expense + a.income),
+      );
   }
 
   /** Dòng tiền theo tháng, cho biểu đồ. */
-  async monthly(from?: string, to?: string) {
+  async monthly(q: QueryReportDto = {}) {
     const rows = await this.prisma.transaction.findMany({
-      where: and(this.range(from, to)),
+      where: this.scope(q),
       select: { date: true, kind: true, amount: true, nature: true },
     });
     const map = new Map<

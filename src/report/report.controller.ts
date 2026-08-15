@@ -2,6 +2,7 @@ import { Controller, Get, Header, Query } from '@nestjs/common';
 import { ReportService } from './report.service';
 import { TransactionService } from '../transaction/transaction.service';
 import { QueryTransactionDto } from '../transaction/dto/query-transaction.dto';
+import { QueryReportDto } from './dto/query-report.dto';
 
 /** Escape theo RFC 4180 + BOM để Excel đọc đúng tiếng Việt. */
 function toCsv(rows: Record<string, unknown>[]) {
@@ -25,18 +26,18 @@ export class ReportController {
   ) {}
 
   @Get('overview')
-  overview(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.reportService.overview(from, to);
+  overview(@Query() q: QueryReportDto) {
+    return this.reportService.overview(q);
   }
 
   @Get('by-category')
-  byCategory(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.reportService.byCategory(from, to);
+  byCategory(@Query() q: QueryReportDto) {
+    return this.reportService.byCategory(q);
   }
 
   @Get('by-project')
-  byProject(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.reportService.byProject(from, to);
+  byProject(@Query() q: QueryReportDto) {
+    return this.reportService.byProject(q);
   }
 
   @Get('loans')
@@ -45,13 +46,13 @@ export class ReportController {
   }
 
   @Get('by-person')
-  byPerson() {
-    return this.reportService.byPerson();
+  byPerson(@Query() q: QueryReportDto) {
+    return this.reportService.byPerson(q);
   }
 
   @Get('monthly')
-  monthly(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.reportService.monthly(from, to);
+  monthly(@Query() q: QueryReportDto) {
+    return this.reportService.monthly(q);
   }
 
   /** Nhận đúng bộ lọc của /transactions. */
@@ -69,6 +70,7 @@ export class ReportController {
         amount: t.amount,
         category: t.category?.name,
         project: t.project?.name ?? '(cá nhân)',
+        person: t.person?.name ?? '',
         note: t.note ?? '',
       })),
     );

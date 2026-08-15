@@ -34,6 +34,12 @@ export class QueryTransactionDto extends ListQueryDto {
   @IsArray()
   projectId?: (number | null)[];
 
+  /** `personId=none` để lấy giao dịch không gắn người nào. */
+  @IsOptional()
+  @ToIdArray()
+  @IsArray()
+  personId?: (number | null)[];
+
   @IsOptional()
   @ToInt()
   @IsInt()

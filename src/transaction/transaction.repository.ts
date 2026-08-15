@@ -22,6 +22,7 @@ export type TransactionData = {
   kind: string;
   categoryId: number;
   projectId?: number | null;
+  personId?: number | null;
   note?: string | null;
 };
 
@@ -29,6 +30,7 @@ const SORTABLE = ['date', 'amount', 'createdAt'] as const;
 const WITH_REFS = {
   category: { select: { id: true, name: true, kind: true, code: true } },
   project: { select: { id: true, name: true } },
+  person: { select: { id: true, name: true } },
   debt: { select: { id: true, direction: true, person: { select: { name: true } } } },
   debtPayment: { select: { id: true, debtId: true } },
 };
@@ -53,6 +55,7 @@ export class TransactionRepository {
           : undefined,
       idFilter('categoryId', dto.categoryId),
       idFilter('projectId', dto.projectId),
+      idFilter('personId', dto.personId),
     );
   }
 

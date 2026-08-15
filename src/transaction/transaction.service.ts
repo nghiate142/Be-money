@@ -45,6 +45,7 @@ export class TransactionService {
       kind: dto.kind,
       categoryId: dto.categoryId,
       projectId: dto.projectId ?? null,
+      personId: dto.personId ?? null,
       note: dto.note ?? null,
     });
   }
@@ -83,6 +84,7 @@ export class TransactionService {
       ...(dto.kind ? { kind: dto.kind } : {}),
       ...(dto.categoryId !== undefined ? { categoryId: dto.categoryId } : {}),
       ...(dto.projectId !== undefined ? { projectId: dto.projectId } : {}),
+      ...(dto.personId !== undefined ? { personId: dto.personId } : {}),
       ...(dto.note !== undefined ? { note: dto.note } : {}),
       ...(money ?? {}),
     });
