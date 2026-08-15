@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   BadRequestException,
   Injectable,
@@ -10,6 +10,8 @@ import { PrismaService } from '../prisma/prisma.service';
 /**
  * Ảnh hoá đơn / màn hình biến động số dư -> gợi ý các trường của form giao dịch.
  * Chỉ GỢI Ý: kết quả đổ vào form cho người dùng sửa rồi mới lưu, không tự ghi sổ.
+ *
+ * Dùng Gemini vì có hạn mức miễn phí, chỉ cần tài khoản Google, không cần thẻ.
  */
 export type ScanResult = {
   date: string | null;
@@ -26,29 +28,30 @@ export type ScanResult = {
   warning: string | null;
 };
 
+/** Schema của Gemini: dùng `nullable` chứ không phải union type như JSON Schema. */
 const SCHEMA = {
-  type: 'object',
+  type: Type.OBJECT,
   properties: {
-    date: { type: ['string', 'null'], description: 'Ngày giao dịch, dạng YYYY-MM-DD' },
+    date: { type: Type.STRING, nullable: true, description: 'Ngày giao dịch YYYY-MM-DD' },
     kind: {
-      type: 'string',
+      type: Type.STRING,
       enum: ['income', 'expense'],
       description: 'income = tiền vào (nhận tiền, ghi có, dấu +), expense = tiền ra',
     },
-    currency: { type: 'string', description: 'Mã tiền tệ 3 ký tự, mặc định VND' },
+    currency: { type: Type.STRING, description: 'Mã tiền tệ 3 ký tự, mặc định VND' },
     amount: {
-      type: 'number',
+      type: Type.NUMBER,
       description: 'Số tiền theo đơn vị lớn (USD 120.50, VND 3000000), luôn dương',
     },
-    fee: { type: 'number', description: 'Phí giao dịch tính bằng VND, 0 nếu không thấy' },
-    categoryId: { type: ['integer', 'null'], description: 'Id danh mục phù hợp nhất' },
-    personId: { type: ['integer', 'null'], description: 'Id người gửi/nhận nếu khớp tên' },
-    note: { type: 'string', description: 'Nội dung chuyển khoản hoặc tên hàng, ngắn gọn' },
-    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    fee: { type: Type.NUMBER, description: 'Phí giao dịch tính bằng VND, 0 nếu không thấy' },
+    categoryId: { type: Type.INTEGER, nullable: true, description: 'Id danh mục phù hợp' },
+    personId: { type: Type.INTEGER, nullable: true, description: 'Id người gửi/nhận' },
+    note: { type: Type.STRING, description: 'Nội dung chuyển khoản hoặc tên hàng, ngắn gọn' },
+    confidence: { type: Type.STRING, enum: ['high', 'medium', 'low'] },
     warning: {
-      type: ['string', 'null'],
-      description:
-        'Cảnh báo ngắn nếu ảnh mờ, có nhiều giao dịch, hoặc nghi là chuyển tiền giữa tài khoản của chính chủ / vay trả nợ',
+      type: Type.STRING,
+      nullable: true,
+      description: 'Cảnh báo ngắn khi ảnh mờ, nhiều giao dịch, nghi chuyển nội bộ hoặc vay nợ',
     },
   },
   required: [
@@ -63,27 +66,25 @@ const SCHEMA = {
     'confidence',
     'warning',
   ],
-  additionalProperties: false,
-} as const;
+};
 
-const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
-type MediaType = (typeof MEDIA_TYPES)[number];
+const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 @Injectable()
 export class ScanService {
   private readonly logger = new Logger(ScanService.name);
-  // Haiku 4.5 đủ cho ảnh hoá đơn / biến động số dư và rẻ nhất (~80đ/ảnh).
-  // Ảnh mờ hoặc hoá đơn nhiều dòng thì đổi ANTHROPIC_MODEL=claude-sonnet-5.
-  private readonly model = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5';
+  // Flash nằm trong hạn mức miễn phí và đủ cho ảnh hoá đơn / biến động số dư.
+  private readonly model = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async scan(file: { buffer: Buffer; mimetype: string; size: number }): Promise<ScanResult> {
-    if (!process.env.ANTHROPIC_API_KEY)
+  async scan(file: { buffer: Buffer; mimetype: string }): Promise<ScanResult> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey)
       throw new ServiceUnavailableException(
-        'Chưa cấu hình ANTHROPIC_API_KEY nên không đọc được ảnh',
+        'Chưa cấu hình GEMINI_API_KEY nên không đọc được ảnh',
       );
-    if (!MEDIA_TYPES.includes(file.mimetype as MediaType))
+    if (!MEDIA_TYPES.includes(file.mimetype))
       throw new BadRequestException('Chỉ nhận ảnh JPEG, PNG, GIF hoặc WebP');
 
     const [categories, people] = await Promise.all([
@@ -95,56 +96,50 @@ export class ScanService {
       this.prisma.person.findMany({ select: { id: true, name: true } }),
     ]);
 
-    const client = new Anthropic();
-    let response: Anthropic.Message;
+    let text: string | undefined;
     try {
-      response = await client.messages.create({
+      const response = await new GoogleGenAI({ apiKey }).models.generateContent({
         model: this.model,
-        max_tokens: 1024,
-        system: this.prompt(categories, people),
-        output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-        messages: [
+        contents: [
           {
             role: 'user',
-            content: [
+            parts: [
               {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: file.mimetype as MediaType,
+                inlineData: {
+                  mimeType: file.mimetype,
                   data: file.buffer.toString('base64'),
                 },
               },
-              { type: 'text', text: 'Đọc ảnh này và trả về thông tin giao dịch.' },
+              { text: 'Đọc ảnh này và trả về thông tin giao dịch.' },
             ],
           },
         ],
+        config: {
+          systemInstruction: this.prompt(categories, people),
+          responseMimeType: 'application/json',
+          responseSchema: SCHEMA,
+        },
       });
+      text = response.text;
     } catch (e) {
-      this.logger.error(`Gọi Claude thất bại: ${(e as Error).message}`);
-      // Sai key / hết credit là lỗi cấu hình, không phải lỗi tạm thời —
-      // nói thẳng ra, nếu không người dùng cứ bấm lại mà không biết vì sao.
-      if (e instanceof Anthropic.APIError && e.status && e.status < 500)
-        throw new ServiceUnavailableException(
-          `Không gọi được Claude: ${this.reason(e)}`,
-        );
-      throw new ServiceUnavailableException('Không đọc được ảnh, thử lại hoặc nhập tay');
+      // Sai key / hết hạn mức là lỗi cấu hình, không phải lỗi tạm thời — nói
+      // thẳng ra, nếu không người dùng cứ bấm lại mà không biết vì sao.
+      const message = (e as Error).message;
+      this.logger.error(`Gọi Gemini thất bại: ${message}`);
+      throw new ServiceUnavailableException(`Không đọc được ảnh: ${this.reason(message)}`);
     }
 
-    if (response.stop_reason === 'refusal')
-      throw new BadRequestException('Ảnh này không đọc được, nhập tay giúp mình');
-
-    const text = response.content.find((b) => b.type === 'text')?.text;
     if (!text) throw new ServiceUnavailableException('Không đọc được ảnh, nhập tay giúp mình');
 
     return this.normalize(JSON.parse(text) as ScanResult, categories, people);
   }
 
-  private reason(e: InstanceType<typeof Anthropic.APIError>) {
-    if (e.status === 401) return 'ANTHROPIC_API_KEY sai hoặc đã bị thu hồi';
-    if (e.status === 429) return 'đang bị giới hạn tốc độ, thử lại sau ít phút';
-    const message = (e.error as { error?: { message?: string } })?.error?.message;
-    return message ?? e.message;
+  private reason(message: string) {
+    if (/API key|API_KEY_INVALID|401|403/i.test(message))
+      return 'GEMINI_API_KEY sai hoặc đã bị thu hồi';
+    if (/quota|RESOURCE_EXHAUSTED|429/i.test(message))
+      return 'hết hạn mức miễn phí trong ngày, thử lại sau';
+    return 'thử lại hoặc nhập tay';
   }
 
   private prompt(
@@ -156,8 +151,8 @@ export class ScanService {
       'và bóc ra thông tin để ghi vào sổ thu chi.',
       '',
       'Xác định chiều tiền theo thứ tự ưu tiên: dấu và màu của số tiền (+ xanh = tiền vào,',
-      '− đỏ = tiền ra), rồi tới từ khoá ("nhận tiền từ", "ghi có" = vào; "chuyển tiền tới",',
-      '"ghi nợ", "thanh toán" = ra). Không suy đoán từ tên người.',
+      '− đỏ = tiền ra), rồi tới từ khoá ("nhận tiền đến", "nhận tiền từ", "ghi có" = vào;',
+      '"chuyển tiền tới", "ghi nợ", "thanh toán" = ra). Không suy đoán từ tên người.',
       '',
       'Chỉ chọn categoryId trong danh sách dưới đây và phải đúng chiều tiền (kind).',
       'Không chắc thì để null — thà bỏ trống còn hơn đoán sai.',
