@@ -32,6 +32,9 @@ COPY prisma ./prisma
 COPY prisma.config.ts ./
 
 COPY --from=build /app/dist ./dist
+# tsc biên dịch cả client Prisma nhưng bỏ rơi các file .ts nội bộ mà client
+# require thẳng lúc chạy. Đè bản gốc lên (Node 24 tự strip type).
+COPY --from=build /app/src/generated/prisma ./dist/generated/prisma
 
 # SQLite nằm trên volume, không nằm trong image.
 ENV DATABASE_URL="file:/data/money.db"
