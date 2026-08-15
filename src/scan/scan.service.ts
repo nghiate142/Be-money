@@ -122,6 +122,12 @@ export class ScanService {
       });
     } catch (e) {
       this.logger.error(`Gọi Claude thất bại: ${(e as Error).message}`);
+      // Sai key / hết credit là lỗi cấu hình, không phải lỗi tạm thời —
+      // nói thẳng ra, nếu không người dùng cứ bấm lại mà không biết vì sao.
+      if (e instanceof Anthropic.APIError && e.status && e.status < 500)
+        throw new ServiceUnavailableException(
+          `Không gọi được Claude: ${this.reason(e)}`,
+        );
       throw new ServiceUnavailableException('Không đọc được ảnh, thử lại hoặc nhập tay');
     }
 
@@ -132,6 +138,13 @@ export class ScanService {
     if (!text) throw new ServiceUnavailableException('Không đọc được ảnh, nhập tay giúp mình');
 
     return this.normalize(JSON.parse(text) as ScanResult, categories, people);
+  }
+
+  private reason(e: InstanceType<typeof Anthropic.APIError>) {
+    if (e.status === 401) return 'ANTHROPIC_API_KEY sai hoặc đã bị thu hồi';
+    if (e.status === 429) return 'đang bị giới hạn tốc độ, thử lại sau ít phút';
+    const message = (e.error as { error?: { message?: string } })?.error?.message;
+    return message ?? e.message;
   }
 
   private prompt(
