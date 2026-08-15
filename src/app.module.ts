@@ -13,6 +13,7 @@ import { DebtModule } from './debt/debt.module';
 import { ReportModule } from './report/report.module';
 import { PersonModule } from './person/person.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
+import { ScanModule } from './scan/scan.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
     ReportModule,
     PersonModule,
     ExchangeRateModule,
+    ScanModule,
   ],
   controllers: [HealthController],
   providers: [
