@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { envOr } from '../common/env.util';
 
 /**
  * Ảnh hoá đơn / màn hình biến động số dư -> gợi ý các trường của form giao dịch.
@@ -74,7 +75,7 @@ const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 export class ScanService {
   private readonly logger = new Logger(ScanService.name);
   // Flash nằm trong hạn mức miễn phí và đủ cho ảnh hoá đơn / biến động số dư.
-  private readonly model = process.env.GEMINI_MODEL ?? 'gemini-flash-latest';
+  private readonly model = envOr('GEMINI_MODEL', 'gemini-flash-latest');
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -98,40 +99,65 @@ export class ScanService {
 
     let text: string | undefined;
     try {
-      const response = await new GoogleGenAI({ apiKey }).models.generateContent({
-        model: this.model,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                inlineData: {
-                  mimeType: file.mimetype,
-                  data: file.buffer.toString('base64'),
-                },
-              },
-              { text: 'Đọc ảnh này và trả về thông tin giao dịch.' },
-            ],
-          },
-        ],
-        config: {
-          systemInstruction: this.prompt(categories, people),
-          responseMimeType: 'application/json',
-          responseSchema: SCHEMA,
-        },
-      });
-      text = response.text;
+      text = await this.ask(apiKey, file, categories, people);
     } catch (e) {
-      // Sai key / hết hạn mức là lỗi cấu hình, không phải lỗi tạm thời — nói
-      // thẳng ra, nếu không người dùng cứ bấm lại mà không biết vì sao.
       const message = (e as Error).message;
-      this.logger.error(`Gọi Gemini thất bại: ${message}`);
-      throw new ServiceUnavailableException(`Không đọc được ảnh: ${this.reason(message)}`);
+      // Gemini hay trả 503 "high demand" trong chốc lát — thử lại một lần
+      // trước khi bắt người dùng bấm lại.
+      if (/UNAVAILABLE|high demand|overloaded|503/i.test(message)) {
+        this.logger.warn('Gemini quá tải, thử lại lần nữa');
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          text = await this.ask(apiKey, file, categories, people);
+        } catch (retry) {
+          throw this.fail((retry as Error).message);
+        }
+      } else {
+        throw this.fail(message);
+      }
     }
 
     if (!text) throw new ServiceUnavailableException('Không đọc được ảnh, nhập tay giúp mình');
 
     return this.normalize(JSON.parse(text) as ScanResult, categories, people);
+  }
+
+  private fail(message: string) {
+    // Sai key / hết hạn mức là lỗi cấu hình, không phải lỗi tạm thời — nói
+    // thẳng ra, nếu không người dùng cứ bấm lại mà không biết vì sao.
+    this.logger.error(`Gọi Gemini thất bại: ${message}`);
+    return new ServiceUnavailableException(`Không đọc được ảnh: ${this.reason(message)}`);
+  }
+
+  private async ask(
+    apiKey: string,
+    file: { buffer: Buffer; mimetype: string },
+    categories: { id: number; name: string; kind: string }[],
+    people: { id: number; name: string }[],
+  ) {
+    const response = await new GoogleGenAI({ apiKey }).models.generateContent({
+      model: this.model,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType: file.mimetype,
+                data: file.buffer.toString('base64'),
+              },
+            },
+            { text: 'Đọc ảnh này và trả về thông tin giao dịch.' },
+          ],
+        },
+      ],
+      config: {
+        systemInstruction: this.prompt(categories, people),
+        responseMimeType: 'application/json',
+        responseSchema: SCHEMA,
+      },
+    });
+    return response.text;
   }
 
   private reason(message: string) {
