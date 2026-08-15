@@ -91,6 +91,10 @@ model Transaction {
   originalAmount Int    @default(0)
   rate           Float  @default(1)
 
+  /// Phí giao dịch (VND) — phí chuyển tiền quốc tế, phí ngân hàng…
+  /// Đã cộng sẵn vào `amount`, tách riêng chỉ để biết phí là bao nhiêu.
+  fee Int @default(0)
+
   kind String // income | expense
 
   /// operating = kinh doanh/tiêu dùng (vào lãi lỗ)

@@ -8,6 +8,7 @@ import {
   IsString,
   Length,
   MaxLength,
+  Min,
 } from 'class-validator';
 import { KINDS } from '../../category/dto/create-category.dto';
 import type { Kind } from '../../category/dto/create-category.dto';
@@ -37,6 +38,12 @@ export class CreateTransactionDto {
   @IsNumber()
   @IsPositive()
   rate?: number;
+
+  /** Phí giao dịch tính bằng VND (phí chuyển tiền quốc tế, phí ngân hàng…). */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  fee?: number;
 
   @IsIn(KINDS)
   kind!: Kind;

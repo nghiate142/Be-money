@@ -17,6 +17,8 @@ export type TransactionData = {
   currency: string;
   originalAmount: number;
   rate: number;
+  /** Phí giao dịch (VND), đã nằm trong `amount`. */
+  fee?: number;
   kind: string;
   categoryId: number;
   projectId?: number | null;

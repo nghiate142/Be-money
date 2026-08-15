@@ -33,10 +33,12 @@ export class TransactionService {
       dto.currency,
       dto.date,
       dto.rate,
+      dto.fee,
     );
     return this.repo.create({
       date: new Date(dto.date),
       amount,
+      fee: dto.fee ?? 0,
       currency,
       originalAmount,
       rate,
@@ -60,15 +62,20 @@ export class TransactionService {
       dto.amount !== undefined ||
       dto.currency !== undefined ||
       dto.rate !== undefined ||
-      dto.date !== undefined;
+      dto.date !== undefined ||
+      dto.fee !== undefined;
 
     const money = touchesMoney
-      ? await this.convert(
-          dto.amount ?? current.originalAmount,
-          dto.currency ?? current.currency,
-          dto.date ?? current.date.toISOString(),
-          dto.rate ?? (dto.currency === undefined ? current.rate : undefined),
-        )
+      ? {
+          ...(await this.convert(
+            dto.amount ?? current.originalAmount,
+            dto.currency ?? current.currency,
+            dto.date ?? current.date.toISOString(),
+            dto.rate ?? (dto.currency === undefined ? current.rate : undefined),
+            dto.fee ?? current.fee,
+          )),
+          fee: dto.fee ?? current.fee,
+        }
       : undefined;
 
     return this.repo.update(id, {
@@ -84,23 +91,30 @@ export class TransactionService {
   /**
    * Quy đổi về VND. Giao dịch VND thì tỷ giá 1, ngoại tệ thì lấy tỷ giá của
    * đúng ngày giao dịch (gọi API rồi cache), trừ khi client chốt sẵn `rate`.
+   * `fee` là phí (VND) cộng thêm vào số vào sổ.
    */
   private async convert(
     original: number,
     code: string | undefined,
     date: string,
     rate?: number,
+    fee = 0,
   ) {
     const currency = (code ?? 'VND').toUpperCase();
     if (currency === 'VND')
-      return { amount: original, currency, originalAmount: original, rate: 1 };
+      return {
+        amount: original + fee,
+        currency,
+        originalAmount: original,
+        rate: 1,
+      };
 
     const meta = await this.prisma.currency.findUnique({ where: { code: currency } });
     if (!meta) throw new BadRequestException(`Không hỗ trợ loại tiền ${currency}`);
 
     const used = rate ?? (await this.rates.resolve(currency, date)).rate;
     return {
-      amount: toVnd(original, meta.decimals, used),
+      amount: toVnd(original, meta.decimals, used) + fee,
       currency,
       originalAmount: original,
       rate: used,
