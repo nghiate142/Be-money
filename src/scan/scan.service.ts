@@ -74,7 +74,7 @@ const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 export class ScanService {
   private readonly logger = new Logger(ScanService.name);
   // Flash nằm trong hạn mức miễn phí và đủ cho ảnh hoá đơn / biến động số dư.
-  private readonly model = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
+  private readonly model = process.env.GEMINI_MODEL ?? 'gemini-flash-latest';
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -155,7 +155,8 @@ export class ScanService {
       '"chuyển tiền tới", "ghi nợ", "thanh toán" = ra). Không suy đoán từ tên người.',
       '',
       'Chỉ chọn categoryId trong danh sách dưới đây và phải đúng chiều tiền (kind).',
-      'Không chắc thì để null — thà bỏ trống còn hơn đoán sai.',
+      'Không khớp danh mục cụ thể nào thì lấy danh mục chung nhất đúng chiều tiền',
+      '(tên có chữ "khác"); không có danh mục chung thì để null.',
       `Danh mục: ${categories.map((c) => `${c.id}=${c.name} (${c.kind})`).join('; ') || '(chưa có)'}`,
       `Người: ${people.map((p) => `${p.id}=${p.name}`).join('; ') || '(chưa có)'}`,
       '',
